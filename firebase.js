@@ -330,7 +330,6 @@ async function loadChildrenOptions() {
 async function saveAdminGroup() {
   const adminName = document.getElementById("groupAdminName")?.value?.trim();
   const adminPhone = document.getElementById("groupAdminPhone")?.value?.trim();
-  const meetLink = document.getElementById("groupMeetLink")?.value?.trim();
   const select = document.getElementById("groupChildren");
 
   if (!adminName || !adminPhone || !select) {
@@ -347,7 +346,6 @@ async function saveAdminGroup() {
   await addDoc(collection(db, "admin_groups"), {
     adminName,
     adminPhone,
-    meetLink,
     children,
     created: new Date()
   });
@@ -355,12 +353,12 @@ async function saveAdminGroup() {
   alert("Admin group save ho gaya");
   document.getElementById("groupAdminName").value = "";
   document.getElementById("groupAdminPhone").value = "";
-  document.getElementById("groupMeetLink").value = "";
   Array.from(select.options).forEach((option) => {
     option.selected = false;
   });
   await loadAdminGroups();
   await loadChildrenOptions();
+  await loadAdminMeetOptions();
 }
 
 async function loadAdminGroups() {
@@ -394,11 +392,62 @@ async function loadAdminGroups() {
   });
 }
 
+async function loadAdminMeetOptions() {
+  const select = document.getElementById("meetAdminGroup");
+  if (!select) {
+    return;
+  }
+
+  select.innerHTML = "";
+  const snapshot = await getDocs(collection(db, "admin_groups"));
+
+  if (snapshot.empty) {
+    select.innerHTML = '<option value="">Pehle admin group banao</option>';
+    return;
+  }
+
+  let firstLink = "";
+
+  snapshot.forEach((docu, index) => {
+    const data = docu.data();
+    const option = document.createElement("option");
+    option.value = docu.id;
+    option.dataset.meetLink = data.meetLink || "";
+    option.textContent = `${data.adminName || "Admin"} (${data.adminPhone || "No phone"})`;
+    select.appendChild(option);
+
+    if (index === 0) {
+      firstLink = data.meetLink || "";
+    }
+  });
+
+  const linkInput = document.getElementById("groupMeetLink");
+  if (linkInput) {
+    linkInput.value = firstLink;
+  }
+}
+
+async function saveAdminMeetLink() {
+  const groupId = document.getElementById("meetAdminGroup")?.value;
+  const meetLink = document.getElementById("groupMeetLink")?.value?.trim();
+
+  if (!groupId) {
+    alert("Pehle admin group select karo");
+    return;
+  }
+
+  await updateDoc(doc(db, "admin_groups", groupId), { meetLink });
+  alert("Meet link save ho gaya");
+  await loadAdminGroups();
+  await loadAdminMeetOptions();
+}
+
 async function deleteAdminGroup(groupId) {
   await deleteDoc(doc(db, "admin_groups", groupId));
   alert("Admin group delete ho gaya");
   await loadAdminGroups();
   await loadChildrenOptions();
+  await loadAdminMeetOptions();
 }
 
 async function findAssignedAdmin(name, studentClass, phone) {
@@ -570,6 +619,7 @@ window.changePin = changePin;
 window.addChallenge = addChallenge;
 window.updatePinRow = updatePinRow;
 window.deleteAdminGroup = deleteAdminGroup;
+window.saveAdminMeetLink = saveAdminMeetLink;
 
 export {
   db,
@@ -589,6 +639,8 @@ export {
   loadChildrenOptions,
   saveAdminGroup,
   loadAdminGroups,
+  loadAdminMeetOptions,
+  saveAdminMeetLink,
   deleteAdminGroup,
   findAssignedAdmin,
   loadLeaderboard,
