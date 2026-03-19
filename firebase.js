@@ -21,6 +21,22 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
+function getCurrentCycleKeyValue() {
+  const now = new Date();
+  const cycleStart = new Date(now);
+  cycleStart.setHours(3, 0, 0, 0);
+
+  if (now < cycleStart) {
+    cycleStart.setDate(cycleStart.getDate() - 1);
+  }
+
+  return cycleStart.toISOString();
+}
+
+function getEffectiveScore(data) {
+  return data?.scoreCycleKey === getCurrentCycleKeyValue() ? Number(data.score || 0) : 0;
+}
+
 async function findUserRecord(name, studentClass, phone) {
   const q = query(
     collection(db, "users"),
@@ -81,6 +97,7 @@ async function saveUserToFirebase() {
     gender,
     phone,
     score: 0,
+    scoreCycleKey: getCurrentCycleKeyValue(),
     created: new Date()
   });
 
@@ -89,6 +106,7 @@ async function saveUserToFirebase() {
   localStorage.setItem("childClass", studentClass);
   localStorage.setItem("childUserId", createdRef.id);
   localStorage.setItem("childScore", "0");
+  localStorage.setItem("scoreCycleKey", getCurrentCycleKeyValue());
 
   alert("Registration Successful");
   window.location.href = "dashboard.html";
@@ -114,7 +132,8 @@ async function loginUser() {
   localStorage.setItem("childPhone", existingUser.phone || phone);
   localStorage.setItem("childClass", existingUser.class || studentClass);
   localStorage.setItem("childUserId", existingUser.id);
-  localStorage.setItem("childScore", String(existingUser.score || 0));
+  localStorage.setItem("childScore", String(getEffectiveScore(existingUser)));
+  localStorage.setItem("scoreCycleKey", getCurrentCycleKeyValue());
 
   alert("Login Successful");
   window.location.href = "dashboard.html";
@@ -140,17 +159,28 @@ async function getParentPin(phone) {
   return record ? record.pin : null;
 }
 
-async function updateUserScore(userId, score) {
+async function updateUserScore(userId, score, extras = {}) {
   if (!userId) {
     return;
   }
-  await updateDoc(doc(db, "users", userId), { score });
+  await updateDoc(doc(db, "users", userId), { score, ...extras });
 }
 
 function subscribeLeaderboard(callback) {
   return onSnapshot(collection(db, "users"), (snapshot) => {
     const users = [];
-    snapshot.forEach((docu) => users.push({ id: docu.id, ...docu.data() }));
+    snapshot.forEach((docu) => {
+      const data = docu.data();
+      const effectiveScore = getEffectiveScore(data);
+      if (effectiveScore <= 0) {
+        return;
+      }
+      users.push({
+        id: docu.id,
+        ...data,
+        score: effectiveScore
+      });
+    });
     users.sort((a, b) => (b.score || 0) - (a.score || 0));
     callback(users);
   });
@@ -239,7 +269,7 @@ async function loadUsers() {
         <td>${data.name || ""}</td>
         <td>${data.class || ""}</td>
         <td>${data.phone || ""}</td>
-        <td>${data.score || 0}</td>
+        <td>${getEffectiveScore(data)}</td>
       </tr>
     `;
   });
@@ -252,9 +282,31 @@ async function loadChildrenOptions() {
   }
 
   select.innerHTML = "";
-  const snapshot = await getDocs(collection(db, "users"));
-  snapshot.forEach((docu) => {
+  const [usersSnapshot, groupsSnapshot] = await Promise.all([
+    getDocs(collection(db, "users")),
+    getDocs(collection(db, "admin_groups"))
+  ]);
+
+  const assignedChildren = new Set();
+  groupsSnapshot.forEach((docu) => {
     const data = docu.data();
+    (data.children || []).forEach((child) => {
+      const key = child.phone || `${child.name || ""}::${child.class || ""}`;
+      assignedChildren.add(key);
+    });
+  });
+
+  let hasUnassignedChild = false;
+
+  usersSnapshot.forEach((docu) => {
+    const data = docu.data();
+    const key = data.phone || `${data.name || ""}::${data.class || ""}`;
+
+    if (assignedChildren.has(key)) {
+      return;
+    }
+
+    hasUnassignedChild = true;
     const option = document.createElement("option");
     option.value = JSON.stringify({
       name: data.name || "",
@@ -264,14 +316,25 @@ async function loadChildrenOptions() {
     option.textContent = `${data.name || "Baccha"} - Class ${data.class || "-"}`;
     select.appendChild(option);
   });
+
+  if (hasUnassignedChild) {
+    return;
+  }
+
+  const option = document.createElement("option");
+  option.disabled = true;
+  option.textContent = "Sab bacche kisi na kisi admin ko assign ho chuke hain";
+  select.appendChild(option);
 }
 
 async function saveAdminGroup() {
   const adminName = document.getElementById("groupAdminName")?.value?.trim();
+  const adminPhone = document.getElementById("groupAdminPhone")?.value?.trim();
+  const meetLink = document.getElementById("groupMeetLink")?.value?.trim();
   const select = document.getElementById("groupChildren");
 
-  if (!adminName || !select) {
-    alert("Admin name aur bacche select karo");
+  if (!adminName || !adminPhone || !select) {
+    alert("Admin name, phone aur bacche select karo");
     return;
   }
 
@@ -283,12 +346,21 @@ async function saveAdminGroup() {
 
   await addDoc(collection(db, "admin_groups"), {
     adminName,
+    adminPhone,
+    meetLink,
     children,
     created: new Date()
   });
 
   alert("Admin group save ho gaya");
-  loadAdminGroups();
+  document.getElementById("groupAdminName").value = "";
+  document.getElementById("groupAdminPhone").value = "";
+  document.getElementById("groupMeetLink").value = "";
+  Array.from(select.options).forEach((option) => {
+    option.selected = false;
+  });
+  await loadAdminGroups();
+  await loadChildrenOptions();
 }
 
 async function loadAdminGroups() {
@@ -313,7 +385,9 @@ async function loadAdminGroups() {
 
     div.innerHTML += `
       <p>
-        <b>${data.adminName || "Admin"}</b> ke bacche: ${childrenText}
+        <b>${data.adminName || "Admin"}</b> (${data.adminPhone || "No phone"})<br>
+        ${data.meetLink ? `<span>Meet: <a href="${data.meetLink}" target="_blank">${data.meetLink}</a></span><br>` : ""}
+        <span>Bacche: ${childrenText}</span>
         <button class="btn btn-edit" style="margin-left:10px;" onclick="deleteAdminGroup('${docu.id}')">Delete</button>
       </p>
     `;
@@ -323,7 +397,8 @@ async function loadAdminGroups() {
 async function deleteAdminGroup(groupId) {
   await deleteDoc(doc(db, "admin_groups", groupId));
   alert("Admin group delete ho gaya");
-  loadAdminGroups();
+  await loadAdminGroups();
+  await loadChildrenOptions();
 }
 
 async function findAssignedAdmin(name, studentClass, phone) {
@@ -340,7 +415,11 @@ async function findAssignedAdmin(name, studentClass, phone) {
     );
 
     if (found && !assignedAdmin) {
-      assignedAdmin = data.adminName || null;
+      assignedAdmin = {
+        adminName: data.adminName || null,
+        adminPhone: data.adminPhone || "",
+        meetLink: data.meetLink || ""
+      };
     }
   });
 
@@ -363,7 +442,14 @@ async function loadLeaderboard() {
 
   const snapshot = await getDocs(collection(db, "users"));
   const users = [];
-  snapshot.forEach((docu) => users.push(docu.data()));
+  snapshot.forEach((docu) => {
+    const data = docu.data();
+    const effectiveScore = getEffectiveScore(data);
+    if (effectiveScore <= 0) {
+      return;
+    }
+    users.push({ ...data, score: effectiveScore });
+  });
   users.sort((a, b) => (b.score || 0) - (a.score || 0));
 
   users.forEach((user, index) => {
